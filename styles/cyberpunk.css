@@ -1,0 +1,60 @@
+/* Copied visual override layer from the main AEON CRM */
+
+:root {
+  --hud-bg: #020408;
+  --hud-bg2: #060d14;
+  --hud-bg3: #08121c;
+  --hud-bg4: #0c1a28;
+  --hud-accent: #00e5ff;
+  --hud-accent2: #ff3cac;
+  --hud-accent-glow: rgba(0, 229, 255, 0.12);
+  --hud-accent2-glow: rgba(255, 60, 172, 0.08);
+  --hud-text: #e8f4f8;
+  --hud-text-dim: rgba(232, 244, 248, 0.45);
+  --hud-text-muted: rgba(232, 244, 248, 0.2);
+  --hud-glass: rgba(6, 18, 28, 0.75);
+  --hud-border: rgba(0, 229, 255, 0.1);
+  --hud-border-hot: rgba(0, 229, 255, 0.35);
+  --hud-grid: rgba(0, 229, 255, 0.035);
+  --hud-success: #00ff9d;
+  --hud-warn: #ffb800;
+  --hud-danger: #ff3c3c;
+  --hud-mono: 'JetBrains Mono', 'Share Tech Mono', monospace;
+  --hud-display: 'Syncopate', 'Orbitron', sans-serif;
+}
+
+body {
+  background: var(--hud-bg) !important;
+  color: var(--hud-text) !important;
+  font-family: var(--hud-mono) !important;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: linear-gradient(var(--hud-grid) 1px, transparent 1px), linear-gradient(90deg, var(--hud-grid) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99999;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.04) 0px, rgba(0, 0, 0, 0.04) 1px, transparent 1px, transparent 3px);
+  opacity: 0.5;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--hud-display) !important;
+  letter-spacing: 0.04em;
+  color: var(--hud-text) !important;
+}
+
+p, span, div, li, td, th, label, a {
+  font-family: var(--hud-mono);
+}
