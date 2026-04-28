@@ -11,6 +11,7 @@ interface Agent {
   status?: string
   calls_today?: number
   talk_time_today?: string
+  talk_time_seconds?: number
   demos_today?: number
   conversion_rate?: string
   active?: boolean
@@ -30,7 +31,7 @@ function fmtTalkTime(secs?: number): string {
 }
 
 export default function UsersPage() {
-  const { data, loading, error } = useApiData<AgentsResponse>('/agents', { agents: [] })
+  const { data, loading, error } = useApiData<AgentsResponse>('/agents/stats', { agents: [] })
   const agents = data.agents
 
   const active   = agents.filter(a => a.active).length
@@ -65,7 +66,7 @@ export default function UsersPage() {
             <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>Loading agents…</div>
           ) : (
             <SimpleTable
-              columns={['Agent', 'Role', 'Dialer State', 'Account', 'Calls Today', 'Talk Time']}
+              columns={['Agent', 'Role', 'Dialer State', 'Account', 'Calls Today', 'Connect Rate', 'Talk Time']}
               rows={agents.map(a => [
                 a.name,
                 a.role,
@@ -77,7 +78,8 @@ export default function UsersPage() {
                 </Badge>,
                 a.enabled === false ? 'Disabled' : 'Enabled',
                 String(a.calls_today ?? 0),
-                a.talk_time_today ?? '—',
+                a.conversion_rate ?? '0.0%',
+                a.talk_time_today ?? fmtTalkTime(a.talk_time_seconds),
               ])}
             />
           )}

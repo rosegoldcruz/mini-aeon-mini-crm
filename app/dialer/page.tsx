@@ -122,7 +122,7 @@ function StateChip({ state }: { state: AgentState }) {
   )
 }
 
-function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, onHangup, loading }: {
+function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, onHangup, onVoicemailDrop, loading }: {
   state: AgentState
   lead: Lead | null
   timer: string
@@ -131,6 +131,7 @@ function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, 
   onReady: () => void
   onPause: () => void
   onHangup: () => void
+  onVoicemailDrop: () => void
   loading: string | null
 }) {
   const idle = (icon: string, color: string, title: string, sub: string, btn?: React.ReactNode) => (
@@ -208,6 +209,10 @@ function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, 
         <div style={{ textAlign:'center', color:'rgba(255,255,255,0.3)', fontSize:13 }}>Lead info loading…</div>
       )}
       <div style={{ flex:1 }} />
+      <button className="d-btn amber" onClick={onVoicemailDrop} disabled={loading==='voicemail-drop'}
+        style={{ padding:12, fontSize:14, fontWeight:700 }}>
+        {loading==='voicemail-drop' ? 'Dropping voicemail…' : '📨 Drop Voicemail'}
+      </button>
       <button className="d-btn danger" onClick={onHangup} disabled={loading==='hangup'}
         style={{ padding:14, fontSize:15, fontWeight:700 }}>
         {loading==='hangup' ? 'Hanging up…' : '⊘ End Call'}
@@ -279,7 +284,7 @@ export default function DialerPage() {
   const startPolling = useCallback(() => {
     stopPolling()
     poll()
-    pollRef.current = setInterval(poll, 3000)
+    pollRef.current = setInterval(poll, 2000)
   }, [poll])
 
   useEffect(() => () => stopPolling(), [])
@@ -333,6 +338,18 @@ export default function DialerPage() {
     try { await apiFetch(`/calls/${activeCall.id}/hangup`, { method: 'POST' }) }
     catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed') }
     finally { setLoading(null) }
+  }
+
+  async function voicemailDrop() {
+    if (!activeCall) return
+    setLoading('voicemail-drop')
+    try {
+      await apiFetch(`/calls/${activeCall.id}/voicemail-drop`, { method: 'POST' })
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setLoading(null)
+    }
   }
 
   async function submitWrapUp() {
@@ -526,7 +543,7 @@ export default function DialerPage() {
             {agentState !== 'WRAP_UP' ? (
               <CenterStage
                 state={agentState} lead={lead} timer={timer} activeCall={activeCall}
-                onArm={arm} onReady={goReady} onPause={pause} onHangup={hangup}
+                onArm={arm} onReady={goReady} onPause={pause} onHangup={hangup} onVoicemailDrop={voicemailDrop}
                 loading={loading}
               />
             ) : (

@@ -6,7 +6,7 @@ import { API_BASE, setAuth, isAuthenticated } from '@/lib/auth'
 
 export default function LoginPage() {
   const router = useRouter()
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
@@ -24,7 +24,7 @@ export default function LoginPage() {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       })
       const body = await res.json()
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
@@ -170,14 +170,16 @@ export default function LoginPage() {
           <div className="login-wordmark">AEON DIAL</div>
           <div className="login-sub">Agent Access Terminal</div>
 
-          <label className="login-label" htmlFor="username">Username</label>
+          <label className="login-label" htmlFor="email">Email Address</label>
           <input
-            id="username"
+            id="email"
             className="login-input"
-            type="text"
-            value={username}
-            onChange={e => setUsername(e.target.value)}
-            autoComplete="username"
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            autoComplete="email"
+            name="email"
+            placeholder="Email address"
             autoFocus
             required
           />
