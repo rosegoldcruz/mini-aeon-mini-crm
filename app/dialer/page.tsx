@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiFetch, isAuthenticated } from '@/lib/auth'
 import { playConnected, playDialTone, playDialerMusic, playHangup, stopDialerMusicImmediate } from '@/lib/dialerSounds'
+import { useTelnyxWebRTC } from '@/hooks/useTelnyxWebRTC'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -247,6 +248,8 @@ export default function DialerPage() {
   const prevAgentStateRef = useRef<AgentState>('OFFLINE')
   const prevCallStatusRef = useRef<string | null>(null)
 
+  const [onRtcReadyTick, setOnRtcReadyTick] = useState(0)
+
   // ── Auth guard
   useEffect(() => {
     if (!isAuthenticated()) router.replace('/login')
@@ -290,6 +293,36 @@ export default function DialerPage() {
     poll()
     pollRef.current = setInterval(poll, 2000)
   }, [poll])
+
+  const onRtcReady = useCallback(() => {
+    setOnRtcReadyTick((n) => n + 1)
+  }, [])
+
+  const { rtcError, connectRtc } = useTelnyxWebRTC(onRtcReady)
+
+  useEffect(() => {
+    if (!rtcError) return
+    setAgentState('ERROR')
+    setLoading(null)
+    setError(rtcError)
+  }, [rtcError])
+
+  useEffect(() => {
+    if (onRtcReadyTick === 0) return
+    ;(async () => {
+      try {
+        await apiFetch('/session/register', { method: 'POST' })
+        setAgentState('REGISTERED')
+        setError(null)
+        startPolling()
+      } catch (e: unknown) {
+        setAgentState('ERROR')
+        setError(e instanceof Error ? e.message : 'Failed to register SIP session')
+      } finally {
+        setLoading(null)
+      }
+    })()
+  }, [onRtcReadyTick, startPolling])
 
   useEffect(() => () => stopPolling(), [])
 
@@ -373,11 +406,14 @@ export default function DialerPage() {
   async function arm() {
     setLoading('arm'); setError(null)
     try {
-      await apiFetch('/session/register', { method: 'POST' })
-      setAgentState('REGISTERED')
-      startPolling()
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed') }
-    finally { setLoading(null) }
+      setAgentState('REGISTERING')
+      const creds = await apiFetch<{ sip_username: string; sip_password: string }>('/session/webrtc-token')
+      await connectRtc(creds.sip_username, creds.sip_password)
+    } catch (e: unknown) {
+      setAgentState('ERROR')
+      setError(e instanceof Error ? e.message : 'Failed')
+      setLoading(null)
+    }
   }
 
   async function goReady() {
