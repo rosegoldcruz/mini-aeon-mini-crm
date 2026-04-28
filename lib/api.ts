@@ -9,7 +9,7 @@ export async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> 
   if (opts?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
-  if (token && !headers.has('Authorization')) {
+  if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }
   const res = await fetch(`${BASE}${path}`, {
