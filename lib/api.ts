@@ -1,10 +1,10 @@
 // lib/api.ts
-import { getToken } from './auth'
+import { TOKEN_KEY } from './auth'
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'https://api.aeondial.com'
 
 export async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const token = getToken()
+  const token = typeof window === 'undefined' ? null : localStorage.getItem(TOKEN_KEY)
   const headers = new Headers(opts?.headers)
   if (opts?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
