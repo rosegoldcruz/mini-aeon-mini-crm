@@ -36,13 +36,14 @@ export function useTelnyxWebRTC(
     setRtcStatus('connecting')
     setRtcError(null)
     try {
-      const normalizedLogin = (sipUsername ?? '').trim().replace(/^sip:/, '').split('@')[0]
-      if (!normalizedLogin || !(sipPassword ?? '').trim()) {
+      const login = (sipUsername ?? '').trim()
+      const password = (sipPassword ?? '').trim()
+      if (!login || !password) {
         throw new Error('Missing SIP credentials')
       }
 
       const { TelnyxRTC } = await import('@telnyx/webrtc')
-      const client = new TelnyxRTC({ login: normalizedLogin, password: sipPassword.trim() })
+      const client = new TelnyxRTC({ login, password })
 
       client.on('telnyx.ready', () => {
         setRtcStatus('ready')
