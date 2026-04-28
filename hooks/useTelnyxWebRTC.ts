@@ -59,6 +59,13 @@ export function useTelnyxWebRTC(
         setActiveRtcCall(null)
       })
 
+      // Explicitly trigger SIP REGISTER once the socket is open.
+      // Without this, some SDK versions connect the WebSocket but never
+      // send a SIP REGISTER, causing Telnyx to return 480 on agent-leg dials.
+      client.on('telnyx.socket.open', () => {
+        try { (client as any).register?.() } catch { /* no-op if not available */ }
+      })
+
       client.on('telnyx.notification', (notification: any) => {
         const { type, call } = notification
 
