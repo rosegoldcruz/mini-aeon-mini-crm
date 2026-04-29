@@ -246,6 +246,9 @@ export default function DialerPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const musicStopRef = useRef<(() => void) | null>(null)
   const prevAgentStateRef = useRef<AgentState>('OFFLINE')
+
+  // Single source of truth for dialer music
+  const shouldPlayMusic = ['RESERVED', 'IN_CALL'].includes(agentState)
   const prevCallStatusRef = useRef<string | null>(null)
 
   const [onRtcReadyTick, setOnRtcReadyTick] = useState(0)
@@ -326,52 +329,40 @@ export default function DialerPage() {
 
   useEffect(() => () => stopPolling(), [])
 
+  // ── Unified music control
+  useEffect(() => {
+    if (shouldPlayMusic && !musicStopRef.current) {
+      musicStopRef.current = playDialerMusic()
+    } else if (!shouldPlayMusic && musicStopRef.current) {
+      musicStopRef.current()
+      musicStopRef.current = null
+    }
+  }, [shouldPlayMusic])
+
   // ── Audio state machine hooks
   useEffect(() => {
     const prevAgentState = prevAgentStateRef.current
     const prevCallStatus = prevCallStatusRef.current
     const currentCallStatus = activeCall?.status ?? null
 
-    // AGENT -> READY: start hold music if not already playing
-    if (agentState === 'READY' && !musicStopRef.current) {
-      musicStopRef.current = playDialerMusic()
-    }
-
     // NEW LEAD LEG DIALED: single dial tick
     if (currentCallStatus === 'lead_dialing' && prevCallStatus !== 'lead_dialing') {
       playDialTone()
     }
 
-    // AGENT STATE -> IN_CALL (bridged): fade out music, play connected chime
+    // AGENT STATE -> IN_CALL (bridged): play connected chime
     if ((agentState === 'IN_CALL' || currentCallStatus === 'bridged') &&
         (prevAgentState !== 'IN_CALL' && prevCallStatus !== 'bridged')) {
-      if (musicStopRef.current) {
-        musicStopRef.current()
-        musicStopRef.current = null
-      }
       playConnected()
     }
 
-    // BRIDGED -> WRAP_UP or READY: hangup tone, then restart hold music
+    // BRIDGED -> WRAP_UP or READY: hangup tone
     const bridgedToWrapOrReady =
       (prevAgentState === 'IN_CALL' || prevCallStatus === 'bridged') &&
       (agentState === 'WRAP_UP' || agentState === 'READY')
 
     if (bridgedToWrapOrReady) {
       playHangup()
-      window.setTimeout(() => {
-        if ((agentState === 'READY' || agentState === 'WRAP_UP') && !musicStopRef.current) {
-          musicStopRef.current = playDialerMusic()
-        }
-      }, 600)
-    }
-
-    // AGENT -> OFFLINE or paused/stopped: stop music
-    if (agentState === 'OFFLINE' || agentState === 'PAUSED') {
-      if (musicStopRef.current) {
-        musicStopRef.current()
-        musicStopRef.current = null
-      }
     }
 
     prevAgentStateRef.current = agentState
