@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiFetch, isAuthenticated } from '@/lib/auth'
-import { playConnected, playDialTone, playDialerMusic, playHangup, stopDialerMusicImmediate } from '@/lib/dialerSounds'
+import {
+  clearDialerAudioActiveCallBlock,
+  playConnected,
+  playDialTone,
+  playDialerMusic,
+  playHangup,
+  stopAllDialerAudio,
+  stopDialerMusicImmediate,
+} from '@/lib/dialerSounds'
 import { useTelnyxWebRTC } from '@/hooks/useTelnyxWebRTC'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -389,8 +397,6 @@ export default function DialerPage() {
   const musicStopRef = useRef<(() => void) | null>(null)
   const prevAgentStateRef = useRef<AgentState>('OFFLINE')
 
-  // Single source of truth for dialer music
-  const shouldPlayMusic = ['RESERVED', 'IN_CALL'].includes(agentState)
   const prevCallStatusRef = useRef<string | null>(null)
 
   const [onRtcReadyTick, setOnRtcReadyTick] = useState(0)
@@ -444,7 +450,19 @@ export default function DialerPage() {
     setOnRtcReadyTick((n) => n + 1)
   }, [])
 
-  const { rtcError, connectRtc } = useTelnyxWebRTC(onRtcReady)
+  const { rtcError, activeRtcCall, connectRtc } = useTelnyxWebRTC(onRtcReady)
+  const hasActiveRtcCall = Boolean(activeRtcCall)
+  const currentCallStatus = activeCall?.status ?? null
+  const hasAnsweredOrBridgedCall =
+    Boolean(activeCall?.answered_at) ||
+    currentCallStatus === 'bridged' ||
+    agentState === 'IN_CALL'
+
+  // Hold audio is only for the hunting/waiting surface, never for a live RTC call.
+  const shouldPlayMusic =
+    (agentState === 'READY' || agentState === 'RESERVED') &&
+    !hasActiveRtcCall &&
+    !hasAnsweredOrBridgedCall
 
   useEffect(() => {
     if (!rtcError) return
@@ -482,21 +500,48 @@ export default function DialerPage() {
     }
   }, [shouldPlayMusic])
 
+  useEffect(() => {
+    if (hasActiveRtcCall) {
+      stopAllDialerAudio('LOCAL_RTC_ACTIVE_CALL')
+      if (musicStopRef.current) {
+        musicStopRef.current()
+        musicStopRef.current = null
+      }
+      return
+    }
+
+    if (agentState === 'IN_CALL' || currentCallStatus === 'bridged') {
+      stopAllDialerAudio(agentState === 'IN_CALL' ? 'BACKEND_IN_CALL' : 'BACKEND_BRIDGED')
+      if (musicStopRef.current) {
+        musicStopRef.current()
+        musicStopRef.current = null
+      }
+      return
+    }
+
+    clearDialerAudioActiveCallBlock('NO_ACTIVE_CALL')
+  }, [agentState, currentCallStatus, hasActiveRtcCall])
+
   // ── Audio state machine hooks
   useEffect(() => {
     const prevAgentState = prevAgentStateRef.current
     const prevCallStatus = prevCallStatusRef.current
-    const currentCallStatus = activeCall?.status ?? null
 
     // NEW LEAD LEG DIALED: single dial tick
-    if (currentCallStatus === 'lead_dialing' && prevCallStatus !== 'lead_dialing') {
+    if (
+      currentCallStatus === 'lead_dialing' &&
+      prevCallStatus !== 'lead_dialing' &&
+      !hasActiveRtcCall &&
+      !hasAnsweredOrBridgedCall
+    ) {
       playDialTone()
     }
 
     // AGENT STATE -> IN_CALL (bridged): play connected chime
     if ((agentState === 'IN_CALL' || currentCallStatus === 'bridged') &&
         (prevAgentState !== 'IN_CALL' && prevCallStatus !== 'bridged')) {
-      playConnected()
+      stopAllDialerAudio(agentState === 'IN_CALL' ? 'BACKEND_IN_CALL' : 'BACKEND_BRIDGED')
+      if (!hasActiveRtcCall) playConnected()
     }
 
     // BRIDGED -> WRAP_UP or READY: hangup tone
@@ -510,7 +555,7 @@ export default function DialerPage() {
 
     prevAgentStateRef.current = agentState
     prevCallStatusRef.current = currentCallStatus
-  }, [agentState, activeCall?.status])
+  }, [agentState, currentCallStatus, hasActiveRtcCall, hasAnsweredOrBridgedCall])
 
   useEffect(() => {
     return () => {
@@ -518,6 +563,7 @@ export default function DialerPage() {
         musicStopRef.current()
         musicStopRef.current = null
       }
+      stopAllDialerAudio('DIALER_UNMOUNT')
       stopDialerMusicImmediate()
     }
   }, [])

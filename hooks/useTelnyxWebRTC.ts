@@ -1,5 +1,6 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { clearDialerAudioActiveCallBlock, stopAllDialerAudio } from '@/lib/dialerSounds'
 
 export interface TelnyxCall {
   id: string
@@ -159,6 +160,7 @@ export function useTelnyxWebRTC(
 
       const markActiveCall = (call: TelnyxCall) => {
         const callId = getCallId(call)
+        stopAllDialerAudio('RTC_CALL_ACTIVE')
         activeRtcCallRef.current = call
         setActiveRtcCall(call)
         setMuted(false)
@@ -181,6 +183,7 @@ export function useTelnyxWebRTC(
         setActiveRtcCall(null)
         setMuted(false)
         console.log('[RTC_CALL_HANGUP]', summarizeCall(call))
+        clearDialerAudioActiveCallBlock('RTC_CALL_HANGUP')
         onCallEndRef.current?.()
       }
 
@@ -265,6 +268,7 @@ export function useTelnyxWebRTC(
         setActiveRtcCall(rtcCall)
         setMuted(false)
 
+        stopAllDialerAudio('RTC_INBOUND_CALL_DETECTED')
         console.log('[RTC_INBOUND_CALL_DETECTED]', summary)
 
         if (hasAnswerAttempt(rtcCall, callId)) return
@@ -276,6 +280,7 @@ export function useTelnyxWebRTC(
             throw new Error('Telnyx call object does not expose answer()')
           }
 
+          stopAllDialerAudio('RTC_AUTO_ANSWER_ATTEMPT')
           console.log('[RTC_AUTO_ANSWER_ATTEMPT]', summary)
 
           const answerResult = rtcCall.answer()
@@ -283,6 +288,7 @@ export function useTelnyxWebRTC(
             await answerResult
           }
 
+          stopAllDialerAudio('RTC_AUTO_ANSWER_SUCCESS')
           console.log('[RTC_AUTO_ANSWER_SUCCESS]', {
             ...summary,
             stateAfterAnswer: normalizeCallState(rtcCall.state),
@@ -333,6 +339,7 @@ export function useTelnyxWebRTC(
         setRtcStatus('idle')
         activeRtcCallRef.current = null
         setActiveRtcCall(null)
+        clearDialerAudioActiveCallBlock('RTC_SOCKET_CLOSE')
       })
 
       client.on('telnyx.notification', handleNotification)
@@ -353,6 +360,7 @@ export function useTelnyxWebRTC(
     activeRtcCallRef.current = null
     setActiveRtcCall(null)
     setMuted(false)
+    clearDialerAudioActiveCallBlock('RTC_DISCONNECT')
   }, [])
 
   const hangupRtcCall = useCallback(() => {
