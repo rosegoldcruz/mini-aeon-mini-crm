@@ -220,6 +220,152 @@ function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, 
   return null
 }
 
+
+type LiveTraceSnapshot = {
+  ts: string
+  api: string[]
+  worker: string[]
+  sessions: Array<Record<string, unknown>>
+  calls: Array<Record<string, unknown>>
+}
+
+function AdminLiveTrace({ visible }: { visible: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const [tab, setTab] = useState<'api' | 'worker' | 'sessions' | 'calls'>('api')
+  const [snapshot, setSnapshot] = useState<LiveTraceSnapshot | null>(null)
+  const [traceError, setTraceError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!visible || !open || paused) return
+
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        const data = await apiFetch<LiveTraceSnapshot>('/admin/live-trace/snapshot')
+        if (!cancelled) {
+          setSnapshot(data)
+          setTraceError(null)
+        }
+      } catch (err) {
+        if (!cancelled) setTraceError(err instanceof Error ? err.message : 'Failed to load live trace')
+      }
+    }
+
+    load()
+    const id = setInterval(load, 2000)
+
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [visible, open, paused])
+
+  if (!visible) return null
+
+  const lines =
+    tab === 'api' ? snapshot?.api ?? [] :
+    tab === 'worker' ? snapshot?.worker ?? [] :
+    tab === 'sessions' ? (snapshot?.sessions ?? []).map((row) => JSON.stringify(row)) :
+    (snapshot?.calls ?? []).map((row) => JSON.stringify(row))
+
+  const copyVisible = async () => {
+    await navigator.clipboard.writeText(lines.join('\n'))
+  }
+
+  return (
+    <div style={{
+      position: 'fixed',
+      left: 18,
+      right: 18,
+      bottom: 14,
+      zIndex: 50,
+      border: '1px solid rgba(6,182,212,0.3)',
+      borderRadius: 12,
+      background: 'rgba(2,8,18,0.96)',
+      boxShadow: '0 0 40px rgba(0,0,0,0.45)',
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 10,
+        padding: '9px 12px',
+        borderBottom: open ? '1px solid rgba(255,255,255,0.08)' : 'none',
+      }}>
+        <button
+          onClick={() => setOpen(!open)}
+          style={{
+            background: 'transparent',
+            border: 0,
+            color: '#67e8f9',
+            fontWeight: 900,
+            fontSize: 12,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            cursor: 'pointer',
+          }}
+        >
+          {open ? '▾' : '▸'} AEON Live Trace
+        </button>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {snapshot?.ts && <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>{new Date(snapshot.ts).toLocaleTimeString()}</span>}
+          {open && (
+            <>
+              <button className="d-btn" style={{ width: 'auto', padding: '5px 9px', fontSize: 11 }} onClick={() => setPaused(!paused)}>
+                {paused ? 'Resume' : 'Pause'}
+              </button>
+              <button className="d-btn" style={{ width: 'auto', padding: '5px 9px', fontSize: 11 }} onClick={copyVisible}>
+                Copy Visible
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ padding: 10 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            {(['api', 'worker', 'sessions', 'calls'] as const).map((key) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`d-btn ${tab === key ? 'primary' : ''}`}
+                style={{ width: 'auto', padding: '6px 10px', fontSize: 11, textTransform: 'uppercase' }}
+              >
+                {key}
+              </button>
+            ))}
+          </div>
+
+          {traceError && <div className="err" style={{ marginBottom: 8 }}>⚠ {traceError}</div>}
+
+          <pre style={{
+            margin: 0,
+            height: 220,
+            overflow: 'auto',
+            padding: 12,
+            borderRadius: 8,
+            background: 'rgba(0,0,0,0.55)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            color: '#b8f7ff',
+            fontSize: 11,
+            lineHeight: 1.45,
+            whiteSpace: 'pre-wrap',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          }}>
+            {lines.length ? lines.join('\n') : 'Waiting for live trace…'}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function DialerPage() {
@@ -231,6 +377,7 @@ export default function DialerPage() {
   const [timer,       setTimer]       = useState('00:00')
   const [loading,     setLoading]     = useState<string | null>(null)
   const [error,       setError]       = useState<string | null>(null)
+  const [agentRole,   setAgentRole]   = useState<string | null>(null)
 
   // Wrap-up form state
   const [disposition, setDisposition] = useState<Disposition | null>(null)
@@ -266,10 +413,11 @@ export default function DialerPage() {
   // ── Poll session + active call every 3s
   const poll = useCallback(async () => {
     try {
-      const [{ session }, { call }] = await Promise.all([
-        apiFetch<{ session: { state: AgentState } | null }>('/session/me'),
+      const [{ agent, session }, { call }] = await Promise.all([
+        apiFetch<{ agent: { role: string } | null, session: { state: AgentState } | null }>('/session/me'),
         apiFetch<{ call: ActiveCall | null }>('/calls/current'),
       ])
+      setAgentRole(agent?.role ?? null)
       setAgentState(session?.state ?? 'OFFLINE')
       setActiveCall(call)
       setError(null)
@@ -702,6 +850,8 @@ export default function DialerPage() {
 
         </div>
       </div>
+
+      <AdminLiveTrace visible={agentRole === 'admin'} />
     </>
   )
 }
