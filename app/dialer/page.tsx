@@ -106,6 +106,7 @@ const STATE_META: Record<AgentState, { label: string; color: string }> = {
 }
 
 const ACTIVE_LEAD_POLL_STATES = new Set<AgentState>(['READY', 'RESERVED', 'DIALING', 'IN_CALL', 'BRIDGED'])
+const RTC_READY_PRESERVE_STATES = new Set<AgentState>(['READY', 'RESERVED', 'DIALING', 'IN_CALL', 'BRIDGED', 'WRAP_UP'])
 
 const ACTIVE_CARD_DISPOSITIONS: Array<{ label: string; value: Disposition }> = [
   { label: 'Interested', value: 'Interested' },
@@ -115,6 +116,8 @@ const ACTIVE_CARD_DISPOSITIONS: Array<{ label: string; value: Disposition }> = [
   { label: 'Wrong Number', value: 'Wrong Number' },
   { label: 'DNC', value: 'Do Not Call' },
 ]
+
+const WRAP_UP_SAVE_STATUSES = new Set(['bridged', 'completed', 'in_call', 'voicemail', 'overflow_ivr'])
 
 function leadName(l: Pick<Lead, 'first_name' | 'last_name'> | null) {
   if (!l) return 'Unknown'
@@ -127,6 +130,12 @@ function currentLead(call: ActiveCall | null) {
 
 function valueOrDash(value: string | null | undefined) {
   return value?.trim() ? value : '—'
+}
+
+function shouldSaveWrapUpCall(call: ActiveCall) {
+  const status = String(call.status ?? '').toLowerCase()
+  if (WRAP_UP_SAVE_STATUSES.has(status)) return true
+  return Boolean(call.answered_at)
 }
 
 function fmtPhone(raw: string) {
@@ -561,8 +570,14 @@ export default function DialerPage() {
   const prevCallStatusRef = useRef<string | null>(null)
   const bootedRef = useRef(false)
   const lastActiveCallRef = useRef<ActiveCall | null>(null)
+  const agentStateRef = useRef<AgentState>('OFFLINE')
+  const rtcBackendRegisteredRef = useRef(false)
 
   const [onRtcReadyTick, setOnRtcReadyTick] = useState(0)
+
+  useEffect(() => {
+    agentStateRef.current = agentState
+  }, [agentState])
 
   // ── History
   const loadHistory = useCallback(async () => {
@@ -585,10 +600,12 @@ export default function DialerPage() {
         const { call } = await apiFetch<{ call: ActiveCall | null }>('/calls/current')
         if (call) {
           console.log('[ACTIVE_LEAD_FOUND]', { call_id: call.id, lead_id: currentLead(call)?.id ?? null, status: call.status })
-          lastActiveCallRef.current = call
-          setLastActiveCall(call)
-          setWrapUpCall(null)
-          console.log('[WRAP_UP_CALL_SAVED]', { call_id: call.id, lead_id: currentLead(call)?.id ?? null, status: call.status })
+          if (shouldSaveWrapUpCall(call)) {
+            lastActiveCallRef.current = call
+            setLastActiveCall(call)
+            setWrapUpCall(null)
+            console.log('[WRAP_UP_CALL_SAVED]', { call_id: call.id, lead_id: currentLead(call)?.id ?? null, status: call.status })
+          }
           setActiveCall(call)
         } else {
           console.log('[ACTIVE_LEAD_NONE]', { agent_state: nextState })
@@ -727,9 +744,19 @@ export default function DialerPage() {
   useEffect(() => {
     if (onRtcReadyTick === 0) return
     ;(async () => {
+      const currentState = agentStateRef.current
+      if (rtcBackendRegisteredRef.current || RTC_READY_PRESERVE_STATES.has(currentState)) {
+        console.log('[RTC_READY_SESSION_PRESERVED]', { state: currentState })
+        setError(null)
+        startPolling()
+        setLoading(null)
+        return
+      }
+
       try {
-        await apiFetch('/session/register', { method: 'POST' })
-        setAgentState('REGISTERED')
+        const res = await apiFetch<{ state: AgentState }>('/session/register', { method: 'POST' })
+        rtcBackendRegisteredRef.current = true
+        setAgentState(res.state ?? 'REGISTERED')
         setError(null)
         startPolling()
       } catch (e: unknown) {

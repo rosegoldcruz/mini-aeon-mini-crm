@@ -120,6 +120,8 @@ export function useTelnyxWebRTC(
   const [muted, setMuted] = useState(false)
 
   const clientRef = useRef<any>(null)
+  const connectingRef = useRef(false)
+  const handlerCleanupRef = useRef<(() => void) | null>(null)
   const activeRtcCallRef = useRef<TelnyxCall | null>(null)
   const answeredCallIdsRef = useRef<Set<string>>(new Set())
   const answeringCallObjectsRef = useRef<WeakSet<object>>(new WeakSet())
@@ -133,8 +135,9 @@ export function useTelnyxWebRTC(
   useEffect(() => { onCallEndRef.current = onCallEnd }, [onCallEnd])
 
   const connectRtc = useCallback(async (sipUsername: string, sipPassword: string) => {
-    if (typeof window === 'undefined' || clientRef.current) return
+    if (typeof window === 'undefined' || clientRef.current || connectingRef.current) return
 
+    connectingRef.current = true
     setRtcStatus('connecting')
     setRtcError(null)
 
@@ -146,11 +149,12 @@ export function useTelnyxWebRTC(
         throw new Error('Missing SIP credentials')
       }
 
-      console.log('[RTC] connecting')
+      console.log('[RTC_CONNECTING]', { login })
       await requestMicrophonePermission()
 
       const { TelnyxRTC } = await import('@telnyx/webrtc')
       const client = new TelnyxRTC({ login, password })
+      clientRef.current = client
       const remoteAudio = ensureRemoteAudioElement()
       if (remoteAudio) {
         client.remoteElement = remoteAudio
@@ -311,7 +315,7 @@ export function useTelnyxWebRTC(
         }
       }
 
-      client.on('telnyx.socket.open', () => {
+      const handleSocketOpen = () => {
         console.log('[RTC_SOCKET_OPEN]')
         try {
           const register = (client as any).register
@@ -320,42 +324,66 @@ export function useTelnyxWebRTC(
         } catch (err) {
           console.warn('[RTC_REGISTER_CALLED]', { error: err })
         }
-      })
+      }
 
-      client.on('telnyx.ready', () => {
+      const handleReady = () => {
+        console.log('[RTC_REGISTERED]')
         console.log('[RTC_READY]')
         setRtcStatus('ready')
         onReadyRef.current?.()
-      })
+      }
 
-      client.on('telnyx.error', (err: Error) => {
+      const handleError = (err: Error) => {
         console.error('[RTC] error', err)
         setRtcStatus('error')
         setRtcError(err?.message ?? 'WebRTC error')
-      })
+      }
 
-      client.on('telnyx.socket.close', () => {
-        console.warn('[RTC] socket.close')
+      const handleSocketClose = () => {
+        console.warn('[RTC_DISCONNECT]', { reason: 'socket.close' })
+        console.warn('[RTC_UNREGISTER]', { reason: 'socket.close' })
         setRtcStatus('idle')
         activeRtcCallRef.current = null
         setActiveRtcCall(null)
         clearDialerAudioActiveCallBlock('RTC_SOCKET_CLOSE')
-      })
+      }
 
+      client.on('telnyx.socket.open', handleSocketOpen)
+      client.on('telnyx.ready', handleReady)
+      client.on('telnyx.error', handleError)
+      client.on('telnyx.socket.close', handleSocketClose)
       client.on('telnyx.notification', handleNotification)
 
+      handlerCleanupRef.current = () => {
+        console.log('[RTC_HANDLER_DETACHED]')
+        try { client.off?.('telnyx.socket.open', handleSocketOpen) } catch { /* noop */ }
+        try { client.off?.('telnyx.ready', handleReady) } catch { /* noop */ }
+        try { client.off?.('telnyx.error', handleError) } catch { /* noop */ }
+        try { client.off?.('telnyx.socket.close', handleSocketClose) } catch { /* noop */ }
+        try { client.off?.('telnyx.notification', handleNotification) } catch { /* noop */ }
+      }
+
+      console.log('[RTC_HANDLER_ATTACHED]')
+
       client.connect()
-      clientRef.current = client
     } catch (err: any) {
       console.error('[RTC] connect failed', err)
       setRtcStatus('error')
       setRtcError(err?.message ?? 'Failed to load WebRTC')
+      clientRef.current = null
+    } finally {
+      connectingRef.current = false
     }
   }, [])
 
   const disconnectRtc = useCallback(() => {
-    try { clientRef.current?.disconnect() } catch { /* noop */ }
+    const client = clientRef.current
+    if (client) console.log('[RTC_DISCONNECT]', { reason: 'disconnectRtc' })
+    try { handlerCleanupRef.current?.() } catch { /* noop */ }
+    handlerCleanupRef.current = null
+    try { client?.disconnect() } catch { /* noop */ }
     clientRef.current = null
+    connectingRef.current = false
     setRtcStatus('idle')
     activeRtcCallRef.current = null
     setActiveRtcCall(null)
@@ -381,7 +409,10 @@ export function useTelnyxWebRTC(
     }
   }, [activeRtcCall, muted])
 
-  useEffect(() => () => { disconnectRtc() }, [disconnectRtc])
+  useEffect(() => () => {
+    console.log('[RTC_DESTROY]')
+    disconnectRtc()
+  }, [disconnectRtc])
 
   return {
     rtcStatus,
