@@ -539,6 +539,8 @@ export default function DialerPage() {
 
   const [agentState,  setAgentState]  = useState<AgentState>('OFFLINE')
   const [activeCall,  setActiveCall]  = useState<ActiveCall | null>(null)
+  const [lastActiveCall, setLastActiveCall] = useState<ActiveCall | null>(null)
+  const [wrapUpCall, setWrapUpCall] = useState<ActiveCall | null>(null)
   const [history,     setHistory]     = useState<HistoryCall[]>([])
   const [timer,       setTimer]       = useState('00:00')
   const [loading,     setLoading]     = useState<string | null>(null)
@@ -558,6 +560,7 @@ export default function DialerPage() {
 
   const prevCallStatusRef = useRef<string | null>(null)
   const bootedRef = useRef(false)
+  const lastActiveCallRef = useRef<ActiveCall | null>(null)
 
   const [onRtcReadyTick, setOnRtcReadyTick] = useState(0)
 
@@ -582,12 +585,30 @@ export default function DialerPage() {
         const { call } = await apiFetch<{ call: ActiveCall | null }>('/calls/current')
         if (call) {
           console.log('[ACTIVE_LEAD_FOUND]', { call_id: call.id, lead_id: currentLead(call)?.id ?? null, status: call.status })
+          lastActiveCallRef.current = call
+          setLastActiveCall(call)
+          setWrapUpCall(null)
+          console.log('[WRAP_UP_CALL_SAVED]', { call_id: call.id, lead_id: currentLead(call)?.id ?? null, status: call.status })
+          setActiveCall(call)
         } else {
           console.log('[ACTIVE_LEAD_NONE]', { agent_state: nextState })
+          if (nextState === 'WRAP_UP') {
+            const savedCall = lastActiveCallRef.current
+            if (savedCall) {
+              setWrapUpCall((current) => current ?? savedCall)
+              console.log('[WRAP_UP_RENDER]', { call_id: savedCall.id, lead_id: currentLead(savedCall)?.id ?? null })
+            }
+          } else {
+            setActiveCall(null)
+          }
         }
-        setActiveCall(call)
       } else if (nextState !== 'WRAP_UP') {
         setActiveCall(null)
+        setWrapUpCall(null)
+        if (nextState === 'OFFLINE') {
+          setLastActiveCall(null)
+          lastActiveCallRef.current = null
+        }
       }
 
       setError(null)
@@ -664,9 +685,13 @@ export default function DialerPage() {
 
   const { rtcError, activeRtcCall, connectRtc } = useTelnyxWebRTC(onRtcReady)
   const hasActiveRtcCall = Boolean(activeRtcCall)
-  const currentCallStatus = activeCall?.status ?? null
-  const currentLeadRecord = currentLead(activeCall)
-  const activeTimerStart = activeCall?.bridged_at ?? activeCall?.answered_at ?? null
+  const renderCall = agentState === 'WRAP_UP'
+    ? (wrapUpCall ?? activeCall ?? lastActiveCall)
+    : activeCall
+  const dispositionCallId = (activeCall ?? wrapUpCall ?? lastActiveCall)?.id ?? null
+  const currentCallStatus = renderCall?.status ?? null
+  const currentLeadRecord = currentLead(renderCall)
+  const activeTimerStart = renderCall?.bridged_at ?? renderCall?.answered_at ?? null
   const hasAnsweredOrBridgedCall =
     Boolean(activeCall?.answered_at) ||
     Boolean(activeCall?.bridged_at) ||
@@ -686,6 +711,18 @@ export default function DialerPage() {
     setLoading(null)
     setError(rtcError)
   }, [rtcError])
+
+  useEffect(() => {
+    if (agentState !== 'WRAP_UP') return
+    const savedCall = wrapUpCall ?? activeCall ?? lastActiveCall
+    if (!savedCall) {
+      console.log('[WRAP_UP_RENDER]', { call_id: null, lead_id: null })
+      return
+    }
+
+    if (!wrapUpCall) setWrapUpCall(savedCall)
+    console.log('[WRAP_UP_RENDER]', { call_id: savedCall.id, lead_id: currentLead(savedCall)?.id ?? null })
+  }, [activeCall, agentState, lastActiveCall, wrapUpCall])
 
   useEffect(() => {
     if (onRtcReadyTick === 0) return
@@ -781,10 +818,10 @@ export default function DialerPage() {
   useEffect(() => {
     console.log('[ACTIVE_LEAD_RENDER]', {
       agent_state: agentState,
-      call_id: activeCall?.id ?? null,
+      call_id: renderCall?.id ?? null,
       lead_id: currentLeadRecord?.id ?? null,
     })
-  }, [agentState, activeCall?.id, currentLeadRecord?.id])
+  }, [agentState, renderCall?.id, currentLeadRecord?.id])
 
   useEffect(() => {
     return () => {
@@ -882,10 +919,19 @@ export default function DialerPage() {
   }
 
   async function submitWrapUp() {
-    if (!activeCall || !disposition) return
+    const callId = dispositionCallId
+    console.log('[DISPOSITION_SUBMIT_ATTEMPT]', { call_id: callId, disposition })
+    if (!callId) {
+      setError('No call is available to disposition.')
+      return
+    }
+    if (!disposition) {
+      setError('Select a disposition before submitting.')
+      return
+    }
     setWrapping(true); setError(null)
     try {
-      await apiFetch(`/calls/${activeCall.id}/wrapup`, {
+      await apiFetch(`/calls/${callId}/wrapup`, {
         method: 'POST',
         body: JSON.stringify({
           disposition,
@@ -893,9 +939,16 @@ export default function DialerPage() {
           callback_at: callbackAt || undefined,
         }),
       })
+      console.log('[DISPOSITION_SUBMIT_SUCCESS]', { call_id: callId, disposition })
       setActiveCall(null); setDisposition(null); setNotes(''); setCallbackAt('')
+      setLastActiveCall(null); setWrapUpCall(null); lastActiveCallRef.current = null
       await loadHistory()
     } catch (e: unknown) {
+      console.log('[DISPOSITION_SUBMIT_ERROR]', {
+        call_id: callId,
+        disposition,
+        error: e instanceof Error ? e.message : 'Failed',
+      })
       if (e instanceof AuthExpiredError) {
         setAuthStatus('expired')
         setError(SESSION_EXPIRED_MESSAGE)
@@ -916,7 +969,17 @@ export default function DialerPage() {
     router.replace('/login?reason=session_expired')
   }
 
-  const lead = currentLeadRecord
+  function clearWrapUp() {
+    setActiveCall(null)
+    setLastActiveCall(null)
+    setWrapUpCall(null)
+    lastActiveCallRef.current = null
+    setDisposition(null)
+    setNotes('')
+    setCallbackAt('')
+  }
+
+  const lead = currentLead(renderCall)
 
   // ── Computed stats
   const durations = history.filter(c => c.duration_seconds).map(c => c.duration_seconds!)
@@ -1190,7 +1253,7 @@ export default function DialerPage() {
           <div style={{ minHeight:0, display:'flex', flexDirection:'column', gap:14 }}>
             <ActiveLeadCard
               state={agentState}
-              call={activeCall}
+              call={renderCall}
               timer={timer}
               selectedDisposition={disposition}
               onSelectDisposition={setDisposition}
@@ -1199,7 +1262,7 @@ export default function DialerPage() {
             <div className="d-panel" style={{ overflow:'auto', flex:1, minHeight:0 }}>
               {agentState !== 'WRAP_UP' ? (
                 <CenterStage
-                  state={agentState} lead={lead} timer={timer} activeCall={activeCall}
+                  state={agentState} lead={lead} timer={timer} activeCall={renderCall}
                   onArm={arm} onReady={goReady} onPause={pause} onHangup={hangup}
                   loading={loading}
                 />
@@ -1246,9 +1309,12 @@ export default function DialerPage() {
 
                   <button className="d-btn primary"
                     onClick={submitWrapUp}
-                    disabled={!disposition || wrapping}
+                    disabled={!dispositionCallId || wrapping}
                     style={{ padding:13, fontSize:14, fontWeight:800 }}>
                     {wrapping ? 'Submitting…' : disposition ? `✓ Submit: ${disposition}` : 'Select a disposition'}
+                  </button>
+                  <button className="d-btn" onClick={clearWrapUp} disabled={wrapping} style={{ padding:12, fontSize:13, fontWeight:700 }}>
+                    New Call / Clear Wrap Up
                   </button>
                 </div>
               )}
