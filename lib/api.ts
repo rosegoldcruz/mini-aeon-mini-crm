@@ -34,17 +34,20 @@ export interface LoginResponse {
 export const login = (username: string, password: string) =>
   apiFetch<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
 
-export type AgentState = 'OFFLINE'|'REGISTERING'|'REGISTERED'|'READY'|'RESERVED'|'IN_CALL'|'WRAP_UP'|'PAUSED'|'ERROR'
+export type AgentState = 'OFFLINE'|'REGISTERING'|'REGISTERED'|'READY'|'RESERVED'|'DIALING'|'IN_CALL'|'BRIDGED'|'WRAP_UP'|'PAUSED'|'ERROR'
 export type Disposition = 'Interested'|'Not Interested'|'Callback'|'Do Not Call'|'No Answer'|'Voicemail'|'Wrong Number'|'Other'
 
 export interface Lead {
   id: string; first_name: string|null; last_name: string|null; email: string|null
-  phone: string; quality: string|null; city: string|null; state: string|null
+  phone: string; quality?: string|null; address: string|null; city: string|null; state: string|null
+  zipcode: string|null; source: string|null; campaign: string|null; notes: string|null
+  metadata: Record<string, unknown>|null
 }
 
 export interface ActiveCall {
-  id: string; status: string; disposition: Disposition|null; notes: string|null
-  started_at: string; answered_at: string|null; leads: Lead|null
+  id: string; status: string; group_id: string|null; agent_leg_id: string|null; lead_leg_id: string|null
+  disposition?: Disposition|null; notes?: string|null
+  started_at: string; answered_at: string|null; bridged_at: string|null; lead: Lead|null; leads?: Lead|null
 }
 
 export interface HistoryCall {

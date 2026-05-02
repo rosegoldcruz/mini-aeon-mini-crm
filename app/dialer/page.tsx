@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Clock, Mail, MapPin, Phone, Tag } from 'lucide-react'
 import { apiFetch, isAuthenticated } from '@/lib/auth'
 import {
   clearDialerAudioActiveCallBlock,
@@ -18,7 +19,7 @@ import { useTelnyxWebRTC } from '@/hooks/useTelnyxWebRTC'
 
 type AgentState =
   | 'OFFLINE' | 'REGISTERING' | 'REGISTERED' | 'READY'
-  | 'RESERVED' | 'IN_CALL' | 'WRAP_UP' | 'PAUSED' | 'ERROR'
+  | 'RESERVED' | 'DIALING' | 'IN_CALL' | 'BRIDGED' | 'WRAP_UP' | 'PAUSED' | 'ERROR'
 
 type Disposition =
   | 'Interested' | 'Not Interested' | 'Callback' | 'Do Not Call'
@@ -30,19 +31,30 @@ interface Lead {
   last_name: string | null
   email: string | null
   phone: string
-  quality: string | null
+  quality?: string | null
+  address: string | null
   city: string | null
   state: string | null
+  zipcode: string | null
+  source: string | null
+  campaign: string | null
+  notes: string | null
+  metadata: Record<string, unknown> | null
 }
 
 interface ActiveCall {
   id: string
   status: string
-  disposition: Disposition | null
-  notes: string | null
+  group_id: string | null
+  agent_leg_id: string | null
+  lead_leg_id: string | null
+  disposition?: Disposition | null
+  notes?: string | null
   started_at: string
   answered_at: string | null
-  leads: Lead | null
+  bridged_at: string | null
+  lead?: Lead | null
+  leads?: Lead | null
 }
 
 interface HistoryCall {
@@ -79,15 +91,36 @@ const STATE_META: Record<AgentState, { label: string; color: string }> = {
   REGISTERED:  { label: 'Standby',     color: '#3b82f6' },
   READY:       { label: 'Ready',       color: '#22c55e' },
   RESERVED:    { label: 'Dialing',     color: '#f59e0b' },
+  DIALING:     { label: 'Dialing',     color: '#f59e0b' },
   IN_CALL:     { label: 'In Call',     color: '#06b6d4' },
+  BRIDGED:     { label: 'Bridged',     color: '#06b6d4' },
   WRAP_UP:     { label: 'Wrap Up',     color: '#a78bfa' },
   PAUSED:      { label: 'Paused',      color: '#f97316' },
   ERROR:       { label: 'Error',       color: '#ef4444' },
 }
 
+const ACTIVE_LEAD_POLL_STATES = new Set<AgentState>(['READY', 'RESERVED', 'DIALING', 'IN_CALL', 'BRIDGED'])
+
+const ACTIVE_CARD_DISPOSITIONS: Array<{ label: string; value: Disposition }> = [
+  { label: 'Interested', value: 'Interested' },
+  { label: 'Not Interested', value: 'Not Interested' },
+  { label: 'Callback', value: 'Callback' },
+  { label: 'No Answer', value: 'No Answer' },
+  { label: 'Wrong Number', value: 'Wrong Number' },
+  { label: 'DNC', value: 'Do Not Call' },
+]
+
 function leadName(l: Pick<Lead, 'first_name' | 'last_name'> | null) {
   if (!l) return 'Unknown'
   return [l.first_name, l.last_name].filter(Boolean).join(' ') || 'Unknown'
+}
+
+function currentLead(call: ActiveCall | null) {
+  return call?.lead ?? call?.leads ?? null
+}
+
+function valueOrDash(value: string | null | undefined) {
+  return value?.trim() ? value : '—'
 }
 
 function fmtPhone(raw: string) {
@@ -123,12 +156,131 @@ function StateChip({ state }: { state: AgentState }) {
     }}>
       <span style={{
         width: 7, height: 7, borderRadius: '50%', background: color,
-        animation: state === 'IN_CALL' || state === 'READY'
+        animation: state === 'IN_CALL' || state === 'BRIDGED' || state === 'READY'
           ? 'dialPulse 1.8s ease infinite' : 'none',
-        boxShadow: state === 'IN_CALL' ? `0 0 0 3px ${color}33` : 'none',
+        boxShadow: state === 'IN_CALL' || state === 'BRIDGED' ? `0 0 0 3px ${color}33` : 'none',
       }} />
       {label}
     </span>
+  )
+}
+
+function ActiveLeadCard({ state, call, timer, selectedDisposition, onSelectDisposition }: {
+  state: AgentState
+  call: ActiveCall | null
+  timer: string
+  selectedDisposition: Disposition | null
+  onSelectDisposition: (disposition: Disposition) => void
+}) {
+  const lead = currentLead(call)
+  const hasLiveCall = Boolean(call) || state === 'IN_CALL' || state === 'BRIDGED'
+  const cityLine = lead ? [lead.city, lead.state, lead.zipcode].filter(Boolean).join(', ') : ''
+
+  let body: React.ReactNode
+  if (state === 'OFFLINE' || state === 'REGISTERED') {
+    body = <div className="active-empty">Arm session to begin.</div>
+  } else if (state === 'READY' && !call) {
+    body = <div className="active-empty">Waiting for connected lead…</div>
+  } else if ((state === 'RESERVED' || state === 'DIALING') && !hasLiveCall) {
+    body = <div className="active-empty amber">Dialing leads…</div>
+  } else if (!lead) {
+    body = <div className="active-empty">Waiting for connected lead…</div>
+  } else {
+    body = (
+      <>
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontSize:20, fontWeight:900, color:'#f8fafc', overflow:'hidden', textOverflow:'ellipsis' }}>
+              {leadName(lead)}
+            </div>
+            <div style={{ marginTop:5, display:'flex', alignItems:'center', gap:7, color:'#67e8f9', fontSize:18, fontWeight:800 }}>
+              <Phone size={16} />
+              <span>{fmtPhone(lead.phone)}</span>
+            </div>
+          </div>
+          <div style={{
+            padding:'5px 9px',
+            borderRadius:8,
+            border:'1px solid rgba(6,182,212,0.28)',
+            background:'rgba(6,182,212,0.09)',
+            color:'#67e8f9',
+            fontSize:11,
+            fontWeight:800,
+            textTransform:'uppercase',
+            whiteSpace:'nowrap',
+          }}>
+            {valueOrDash(call?.status)}
+          </div>
+        </div>
+
+        <div className="active-field-grid">
+          <div className="active-field">
+            <Mail size={14} />
+            <span>{valueOrDash(lead.email)}</span>
+          </div>
+          <div className="active-field">
+            <MapPin size={14} />
+            <span>{valueOrDash(lead.address)}</span>
+          </div>
+          <div className="active-field">
+            <MapPin size={14} />
+            <span>{valueOrDash(cityLine)}</span>
+          </div>
+          <div className="active-field">
+            <Tag size={14} />
+            <span>{valueOrDash(lead.source)}</span>
+          </div>
+          <div className="active-field">
+            <Tag size={14} />
+            <span>{valueOrDash(lead.campaign)}</span>
+          </div>
+          <div className="active-field">
+            <Clock size={14} />
+            <span>{timer}</span>
+          </div>
+        </div>
+
+        {lead.notes && (
+          <div style={{
+            padding:10,
+            borderRadius:8,
+            background:'rgba(255,255,255,0.04)',
+            border:'1px solid rgba(255,255,255,0.08)',
+            color:'rgba(226,232,240,0.82)',
+            fontSize:12,
+            lineHeight:1.45,
+          }}>
+            {lead.notes}
+          </div>
+        )}
+
+        <div>
+          <div className="d-label" style={{ marginBottom:8 }}>Disposition</div>
+          <div className="active-disp-grid">
+            {ACTIVE_CARD_DISPOSITIONS.map(({ label, value }) => (
+              <button
+                key={value}
+                className={`active-disp-btn${selectedDisposition === value ? ' sel' : ''}`}
+                onClick={() => onSelectDisposition(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </>
+    )
+  }
+
+  return (
+    <div className="d-panel active-lead-card">
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+        <div className="d-label">Active Lead</div>
+        {call?.id && <span style={{ color:'rgba(255,255,255,0.28)', fontSize:10, fontFamily:'ui-monospace, monospace' }}>{call.id.slice(0, 8)}</span>}
+      </div>
+      {body}
+    </div>
   )
 }
 
@@ -183,16 +335,16 @@ function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, 
     return idle('📶', '#22c55e', 'Ready for Calls',
       'Waiting for the campaign dialer to connect you with a lead.')
 
-  if (state === 'RESERVED')
+  if (state === 'RESERVED' || state === 'DIALING')
     return idle('📲', '#f59e0b', 'Dialing Lead…',
       lead ? leadName(lead) : 'Connecting — your browser will ring shortly.')
 
-  if (state === 'IN_CALL') return (
+  if (state === 'IN_CALL' || state === 'BRIDGED') return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', gap:18 }}>
       <div style={{ textAlign:'center', paddingTop:8 }}>
         <div className="d-label" style={{ marginBottom:4 }}>Call Duration</div>
         <div style={{ fontSize:48, fontWeight:900, color:'#06b6d4', fontVariantNumeric:'tabular-nums', letterSpacing:'0.05em', textShadow:'0 0 40px #06b6d455' }}>
-          {activeCall?.answered_at ? timer : '——'}
+          {activeCall?.bridged_at || activeCall?.answered_at ? timer : '——'}
         </div>
       </div>
       {lead ? (
@@ -416,16 +568,27 @@ export default function DialerPage() {
 
   useEffect(() => { loadHistory() }, [loadHistory])
 
-  // ── Poll session + active call every 3s
+  // ── Poll session and screen-pop call state
   const poll = useCallback(async () => {
     try {
-      const [{ agent, session }, { call }] = await Promise.all([
-        apiFetch<{ agent: { role: string } | null, session: { state: AgentState } | null }>('/session/me'),
-        apiFetch<{ call: ActiveCall | null }>('/calls/current'),
-      ])
+      const { agent, session } = await apiFetch<{ agent: { role: string } | null, session: { state: AgentState } | null }>('/session/me')
+      const nextState = session?.state ?? 'OFFLINE'
       setAgentRole(agent?.role ?? null)
-      setAgentState(session?.state ?? 'OFFLINE')
-      setActiveCall(call)
+      setAgentState(nextState)
+
+      if (ACTIVE_LEAD_POLL_STATES.has(nextState)) {
+        console.log('[ACTIVE_LEAD_POLL]', { agent_state: nextState })
+        const { call } = await apiFetch<{ call: ActiveCall | null }>('/calls/current')
+        if (call) {
+          console.log('[ACTIVE_LEAD_FOUND]', { call_id: call.id, lead_id: currentLead(call)?.id ?? null, status: call.status })
+        } else {
+          console.log('[ACTIVE_LEAD_NONE]', { agent_state: nextState })
+        }
+        setActiveCall(call)
+      } else if (nextState !== 'WRAP_UP') {
+        setActiveCall(null)
+      }
+
       setError(null)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : ''
@@ -443,7 +606,7 @@ export default function DialerPage() {
   const startPolling = useCallback(() => {
     stopPolling()
     poll()
-    pollRef.current = setInterval(poll, 2000)
+    pollRef.current = setInterval(poll, 1500)
   }, [poll])
 
   const onRtcReady = useCallback(() => {
@@ -453,10 +616,14 @@ export default function DialerPage() {
   const { rtcError, activeRtcCall, connectRtc } = useTelnyxWebRTC(onRtcReady)
   const hasActiveRtcCall = Boolean(activeRtcCall)
   const currentCallStatus = activeCall?.status ?? null
+  const currentLeadRecord = currentLead(activeCall)
+  const activeTimerStart = activeCall?.bridged_at ?? activeCall?.answered_at ?? null
   const hasAnsweredOrBridgedCall =
     Boolean(activeCall?.answered_at) ||
+    Boolean(activeCall?.bridged_at) ||
     currentCallStatus === 'bridged' ||
-    agentState === 'IN_CALL'
+    agentState === 'IN_CALL' ||
+    agentState === 'BRIDGED'
 
   // Hold audio is only for the hunting/waiting surface, never for a live RTC call.
   const shouldPlayMusic =
@@ -510,7 +677,7 @@ export default function DialerPage() {
       return
     }
 
-    if (agentState === 'IN_CALL' || currentCallStatus === 'bridged') {
+    if (agentState === 'IN_CALL' || agentState === 'BRIDGED' || currentCallStatus === 'bridged') {
       stopAllDialerAudio(agentState === 'IN_CALL' ? 'BACKEND_IN_CALL' : 'BACKEND_BRIDGED')
       if (musicStopRef.current) {
         musicStopRef.current()
@@ -538,15 +705,15 @@ export default function DialerPage() {
     }
 
     // AGENT STATE -> IN_CALL (bridged): play connected chime
-    if ((agentState === 'IN_CALL' || currentCallStatus === 'bridged') &&
-        (prevAgentState !== 'IN_CALL' && prevCallStatus !== 'bridged')) {
+    if ((agentState === 'IN_CALL' || agentState === 'BRIDGED' || currentCallStatus === 'bridged') &&
+        (prevAgentState !== 'IN_CALL' && prevAgentState !== 'BRIDGED' && prevCallStatus !== 'bridged')) {
       stopAllDialerAudio(agentState === 'IN_CALL' ? 'BACKEND_IN_CALL' : 'BACKEND_BRIDGED')
       if (!hasActiveRtcCall) playConnected()
     }
 
     // BRIDGED -> WRAP_UP or READY: hangup tone
     const bridgedToWrapOrReady =
-      (prevAgentState === 'IN_CALL' || prevCallStatus === 'bridged') &&
+      (prevAgentState === 'IN_CALL' || prevAgentState === 'BRIDGED' || prevCallStatus === 'bridged') &&
       (agentState === 'WRAP_UP' || agentState === 'READY')
 
     if (bridgedToWrapOrReady) {
@@ -556,6 +723,14 @@ export default function DialerPage() {
     prevAgentStateRef.current = agentState
     prevCallStatusRef.current = currentCallStatus
   }, [agentState, currentCallStatus, hasActiveRtcCall, hasAnsweredOrBridgedCall])
+
+  useEffect(() => {
+    console.log('[ACTIVE_LEAD_RENDER]', {
+      agent_state: agentState,
+      call_id: activeCall?.id ?? null,
+      lead_id: currentLeadRecord?.id ?? null,
+    })
+  }, [agentState, activeCall?.id, currentLeadRecord?.id])
 
   useEffect(() => {
     return () => {
@@ -570,14 +745,18 @@ export default function DialerPage() {
 
   // ── Call timer
   useEffect(() => {
-    if (!activeCall?.answered_at) return
-    const id = setInterval(() => setTimer(elapsed(activeCall.answered_at!)), 500)
+    if (!activeTimerStart) {
+      setTimer('00:00')
+      return
+    }
+    setTimer(elapsed(activeTimerStart))
+    const id = setInterval(() => setTimer(elapsed(activeTimerStart)), 500)
     return () => clearInterval(id)
-  }, [activeCall?.answered_at])
+  }, [activeTimerStart])
 
   // ── Reset wrap-up form on new call
   useEffect(() => {
-    if (agentState === 'RESERVED' || agentState === 'IN_CALL') {
+    if (agentState === 'RESERVED' || agentState === 'DIALING' || agentState === 'IN_CALL' || agentState === 'BRIDGED') {
       setDisposition(null); setNotes(''); setCallbackAt('')
     }
   }, [agentState])
@@ -640,7 +819,7 @@ export default function DialerPage() {
     finally { setWrapping(false) }
   }
 
-  const lead = activeCall?.leads ?? null
+  const lead = currentLeadRecord
 
   // ── Computed stats
   const durations = history.filter(c => c.duration_seconds).map(c => c.duration_seconds!)
@@ -713,6 +892,30 @@ export default function DialerPage() {
         .err { padding: 8px 12px; background: rgba(239,68,68,0.12);
           border: 1px solid rgba(239,68,68,0.3); border-radius: 7px;
           font-size: 12px; color: #fca5a5; }
+        .active-lead-card { gap: 12px; }
+        .active-empty {
+          min-height: 86px; display: flex; align-items: center; justify-content: center;
+          border: 1px dashed rgba(255,255,255,0.12); border-radius: 8px;
+          color: rgba(255,255,255,0.38); font-size: 13px; font-weight: 700;
+          text-align: center; padding: 12px;
+        }
+        .active-empty.amber { color: #fcd34d; border-color: rgba(245,158,11,0.28); background: rgba(245,158,11,0.06); }
+        .active-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+        .active-field {
+          min-width: 0; display: flex; align-items: center; gap: 7px;
+          color: rgba(226,232,240,0.74); font-size: 12px; line-height: 1.3;
+        }
+        .active-field svg { flex: 0 0 auto; color: rgba(103,232,249,0.72); }
+        .active-field span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .active-disp-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .active-disp-btn {
+          min-height: 34px; padding: 7px 8px; border-radius: 7px;
+          border: 1px solid rgba(255,255,255,0.1);
+          background: rgba(255,255,255,0.035); color: rgba(255,255,255,0.66);
+          font-size: 11px; font-weight: 800; cursor: pointer; font-family: inherit;
+        }
+        .active-disp-btn:hover { background: rgba(255,255,255,0.08); }
+        .active-disp-btn.sel { border-color: rgba(6,182,212,0.58); color: #67e8f9; background: rgba(6,182,212,0.12); }
       `}</style>
 
       <div style={{ padding: '14px 18px', height: 'calc(100% - 28px)', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -764,7 +967,7 @@ export default function DialerPage() {
                 <div>
                   <div className="d-label" style={{ marginBottom:4 }}>Timer</div>
                   <div style={{ fontSize:18, fontWeight:800, color:'#06b6d4', fontVariantNumeric:'tabular-nums' }}>
-                    {agentState==='IN_CALL' ? timer : '——'}
+                    {agentState==='IN_CALL' || agentState==='BRIDGED' ? timer : '——'}
                   </div>
                 </div>
               </div>
@@ -772,7 +975,7 @@ export default function DialerPage() {
                 <>
                   <div className="d-divider" />
                   <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                    {agentState==='IN_CALL' && (
+                    {(agentState==='IN_CALL' || agentState==='BRIDGED') && (
                       <button className="d-btn danger" onClick={hangup} disabled={loading==='hangup'}>
                         {loading==='hangup' ? 'Hanging up…' : '⊘ End Call'}
                       </button>
@@ -808,63 +1011,73 @@ export default function DialerPage() {
             </div>
           </div>
 
-          {/* CENTER — main stage */}
-          <div className="d-panel" style={{ overflow:'auto' }}>
-            {agentState !== 'WRAP_UP' ? (
-              <CenterStage
-                state={agentState} lead={lead} timer={timer} activeCall={activeCall}
-                onArm={arm} onReady={goReady} onPause={pause} onHangup={hangup}
-                loading={loading}
-              />
-            ) : (
-              /* ── Wrap-up form ── */
-              <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
-                <div>
-                  <div style={{ fontSize:16, fontWeight:800, color:'#a78bfa', marginBottom:4 }}>Wrap Up</div>
-                  {lead && <div style={{ fontSize:13, color:'rgba(255,255,255,0.45)' }}>{leadName(lead)} · {fmtPhone(lead.phone)}</div>}
-                </div>
+          {/* CENTER — active lead + main stage */}
+          <div style={{ minHeight:0, display:'flex', flexDirection:'column', gap:14 }}>
+            <ActiveLeadCard
+              state={agentState}
+              call={activeCall}
+              timer={timer}
+              selectedDisposition={disposition}
+              onSelectDisposition={setDisposition}
+            />
 
-                <div>
-                  <div className="d-label" style={{ marginBottom:8 }}>Disposition *</div>
-                  <div className="disp-grid">
-                    {DISPOSITIONS.map(d => (
-                      <button
-                        key={d}
-                        className={`disp-btn${disposition===d ? ' sel' : ''}`}
-                        style={{ '--dc': DISP_TONES[d] } as React.CSSProperties}
-                        onClick={() => setDisposition(d)}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {disposition === 'Callback' && (
+            <div className="d-panel" style={{ overflow:'auto', flex:1, minHeight:0 }}>
+              {agentState !== 'WRAP_UP' ? (
+                <CenterStage
+                  state={agentState} lead={lead} timer={timer} activeCall={activeCall}
+                  onArm={arm} onReady={goReady} onPause={pause} onHangup={hangup}
+                  loading={loading}
+                />
+              ) : (
+                /* ── Wrap-up form ── */
+                <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
                   <div>
-                    <div className="d-label" style={{ marginBottom:6 }}>Callback Date & Time</div>
-                    <input type="datetime-local" className="d-input"
-                      value={callbackAt} onChange={e => setCallbackAt(e.target.value)} />
+                    <div style={{ fontSize:16, fontWeight:800, color:'#a78bfa', marginBottom:4 }}>Wrap Up</div>
+                    {lead && <div style={{ fontSize:13, color:'rgba(255,255,255,0.45)' }}>{leadName(lead)} · {fmtPhone(lead.phone)}</div>}
                   </div>
-                )}
 
-                <div>
-                  <div className="d-label" style={{ marginBottom:6 }}>Notes</div>
-                  <textarea className="d-textarea" rows={4}
-                    placeholder="Add call notes…"
-                    value={notes} onChange={e => setNotes(e.target.value)} />
+                  <div>
+                    <div className="d-label" style={{ marginBottom:8 }}>Disposition *</div>
+                    <div className="disp-grid">
+                      {DISPOSITIONS.map(d => (
+                        <button
+                          key={d}
+                          className={`disp-btn${disposition===d ? ' sel' : ''}`}
+                          style={{ '--dc': DISP_TONES[d] } as React.CSSProperties}
+                          onClick={() => setDisposition(d)}
+                        >
+                          {d}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {disposition === 'Callback' && (
+                    <div>
+                      <div className="d-label" style={{ marginBottom:6 }}>Callback Date & Time</div>
+                      <input type="datetime-local" className="d-input"
+                        value={callbackAt} onChange={e => setCallbackAt(e.target.value)} />
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="d-label" style={{ marginBottom:6 }}>Notes</div>
+                    <textarea className="d-textarea" rows={4}
+                      placeholder="Add call notes…"
+                      value={notes} onChange={e => setNotes(e.target.value)} />
+                  </div>
+
+                  {error && <div className="err">⚠ {error}</div>}
+
+                  <button className="d-btn primary"
+                    onClick={submitWrapUp}
+                    disabled={!disposition || wrapping}
+                    style={{ padding:13, fontSize:14, fontWeight:800 }}>
+                    {wrapping ? 'Submitting…' : disposition ? `✓ Submit: ${disposition}` : 'Select a disposition'}
+                  </button>
                 </div>
-
-                {error && <div className="err">⚠ {error}</div>}
-
-                <button className="d-btn primary"
-                  onClick={submitWrapUp}
-                  disabled={!disposition || wrapping}
-                  style={{ padding:13, fontSize:14, fontWeight:800 }}>
-                  {wrapping ? 'Submitting…' : disposition ? `✓ Submit: ${disposition}` : 'Select a disposition'}
-                </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* RIGHT — call history */}
