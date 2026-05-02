@@ -107,6 +107,7 @@ const STATE_META: Record<AgentState, { label: string; color: string }> = {
 
 const ACTIVE_LEAD_POLL_STATES = new Set<AgentState>(['READY', 'RESERVED', 'DIALING', 'IN_CALL', 'BRIDGED'])
 const RTC_READY_PRESERVE_STATES = new Set<AgentState>(['READY', 'RESERVED', 'DIALING', 'IN_CALL', 'BRIDGED', 'WRAP_UP'])
+const LEAD_VISIBLE_STATUSES = new Set(['lead_dialing', 'lead_answered', 'bridged', 'in_call', 'completed', 'voicemail', 'overflow_ivr'])
 
 const ACTIVE_CARD_DISPOSITIONS: Array<{ label: string; value: Disposition }> = [
   { label: 'Interested', value: 'Interested' },
@@ -136,6 +137,12 @@ function shouldSaveWrapUpCall(call: ActiveCall) {
   const status = String(call.status ?? '').toLowerCase()
   if (WRAP_UP_SAVE_STATUSES.has(status)) return true
   return Boolean(call.answered_at)
+}
+
+function shouldShowLeadForCall(call: ActiveCall | null) {
+  if (!call) return false
+  const status = String(call.status ?? '').toLowerCase()
+  return Boolean(call.lead_leg_id) || LEAD_VISIBLE_STATUSES.has(status)
 }
 
 function fmtPhone(raw: string) {
@@ -187,7 +194,8 @@ function ActiveLeadCard({ state, call, timer, selectedDisposition, onSelectDispo
   selectedDisposition: Disposition | null
   onSelectDisposition: (disposition: Disposition) => void
 }) {
-  const lead = currentLead(call)
+  const showLead = shouldShowLeadForCall(call)
+  const lead = showLead ? currentLead(call) : null
   const hasLiveCall = Boolean(call) || state === 'IN_CALL' || state === 'BRIDGED'
   const cityLine = lead ? [lead.city, lead.state, lead.zipcode].filter(Boolean).join(', ') : ''
 
@@ -196,8 +204,10 @@ function ActiveLeadCard({ state, call, timer, selectedDisposition, onSelectDispo
     body = <div className="active-empty">Arm session to begin.</div>
   } else if (state === 'READY' && !call) {
     body = <div className="active-empty">Waiting for connected lead…</div>
-  } else if ((state === 'RESERVED' || state === 'DIALING') && !hasLiveCall) {
-    body = <div className="active-empty amber">Dialing leads…</div>
+  } else if ((state === 'RESERVED' || state === 'DIALING') && (!hasLiveCall || !showLead)) {
+    body = <div className="active-empty amber">Connecting your browser phone…</div>
+  } else if (call && !showLead) {
+    body = <div className="active-empty amber">Preparing call…</div>
   } else if (!lead) {
     body = <div className="active-empty">Waiting for connected lead…</div>
   } else {
@@ -351,8 +361,8 @@ function CenterStage({ state, lead, timer, activeCall, onArm, onReady, onPause, 
       'Waiting for the campaign dialer to connect you with a lead.')
 
   if (state === 'RESERVED' || state === 'DIALING')
-    return idle('📲', '#f59e0b', 'Dialing Lead…',
-      lead ? leadName(lead) : 'Connecting — your browser will ring shortly.')
+    return idle('📲', '#f59e0b', 'Connecting Browser Phone…',
+      lead ? leadName(lead) : 'Preparing call…')
 
   if (state === 'IN_CALL' || state === 'BRIDGED') return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', gap:18 }}>
@@ -707,7 +717,7 @@ export default function DialerPage() {
     : activeCall
   const dispositionCallId = (activeCall ?? wrapUpCall ?? lastActiveCall)?.id ?? null
   const currentCallStatus = renderCall?.status ?? null
-  const currentLeadRecord = currentLead(renderCall)
+  const currentLeadRecord = shouldShowLeadForCall(renderCall) ? currentLead(renderCall) : null
   const activeTimerStart = renderCall?.bridged_at ?? renderCall?.answered_at ?? null
   const hasAnsweredOrBridgedCall =
     Boolean(activeCall?.answered_at) ||
@@ -1006,7 +1016,7 @@ export default function DialerPage() {
     setCallbackAt('')
   }
 
-  const lead = currentLead(renderCall)
+  const lead = currentLeadRecord
 
   // ── Computed stats
   const durations = history.filter(c => c.duration_seconds).map(c => c.duration_seconds!)
