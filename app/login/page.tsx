@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { API_BASE, setAuth, isAuthenticated } from '@/lib/auth'
+import { apiFetch, clearAuth, setAuth, isAuthenticated, SESSION_EXPIRED_MESSAGE } from '@/lib/auth'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -10,9 +10,13 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
+  const [notice,   setNotice]   = useState<string | null>(null)
 
   // Already authed — go straight to dialer
   useEffect(() => {
+    if (window.location.search.includes('reason=session_expired')) {
+      setNotice(SESSION_EXPIRED_MESSAGE)
+    }
     if (isAuthenticated()) router.replace('/dialer')
   }, [router])
 
@@ -21,13 +25,21 @@ export default function LoginPage() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
+      const body = await apiFetch<{
+        token: string
+        agent: {
+          id: string
+          name: string
+          email: string
+          username?: string
+          role: string
+          telnyx_sip_username: string | null
+          telnyx_sip_password: string | null
+        }
+      }>('/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
       setAuth(body.token, body.agent)
       router.replace('/dialer')
     } catch (err: unknown) {
@@ -35,6 +47,14 @@ export default function LoginPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  function clearSessionAndRetry() {
+    console.log('[AUTH_RECOVERY_CLEAR_SESSION]')
+    clearAuth()
+    setNotice(null)
+    setError(null)
+    router.replace('/login')
   }
 
   return (
@@ -198,6 +218,32 @@ export default function LoginPage() {
           <button className="login-btn" type="submit" disabled={loading}>
             {loading ? 'AUTHENTICATING…' : 'ENTER SYSTEM'}
           </button>
+
+          {notice && (
+            <div className="login-error">
+              {notice}
+              <button
+                type="button"
+                onClick={clearSessionAndRetry}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  marginTop: 10,
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  border: '1px solid rgba(248,113,113,0.35)',
+                  background: 'rgba(248,113,113,0.1)',
+                  color: '#fecaca',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                Clear session and retry
+              </button>
+            </div>
+          )}
 
           {error && <div className="login-error">⚠ {error}</div>}
 

@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Clock, Mail, MapPin, Phone, Tag } from 'lucide-react'
-import { apiFetch, isAuthenticated } from '@/lib/auth'
+import {
+  AuthExpiredError,
+  apiFetch,
+  clearAuth,
+  getToken,
+  SESSION_EXPIRED_MESSAGE,
+} from '@/lib/auth'
 import {
   clearDialerAudioActiveCallBlock,
   playConnected,
@@ -538,6 +544,7 @@ export default function DialerPage() {
   const [loading,     setLoading]     = useState<string | null>(null)
   const [error,       setError]       = useState<string | null>(null)
   const [agentRole,   setAgentRole]   = useState<string | null>(null)
+  const [authStatus,  setAuthStatus]  = useState<'checking' | 'valid' | 'expired'>('checking')
 
   // Wrap-up form state
   const [disposition, setDisposition] = useState<Disposition | null>(null)
@@ -550,13 +557,9 @@ export default function DialerPage() {
   const prevAgentStateRef = useRef<AgentState>('OFFLINE')
 
   const prevCallStatusRef = useRef<string | null>(null)
+  const bootedRef = useRef(false)
 
   const [onRtcReadyTick, setOnRtcReadyTick] = useState(0)
-
-  // ── Auth guard
-  useEffect(() => {
-    if (!isAuthenticated()) router.replace('/login')
-  }, [router])
 
   // ── History
   const loadHistory = useCallback(async () => {
@@ -565,8 +568,6 @@ export default function DialerPage() {
       setHistory(calls.slice(0, 10))
     } catch { /* silent */ }
   }, [])
-
-  useEffect(() => { loadHistory() }, [loadHistory])
 
   // ── Poll session and screen-pop call state
   const poll = useCallback(async () => {
@@ -592,12 +593,15 @@ export default function DialerPage() {
       setError(null)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : ''
-      if (msg.includes('401') || msg.includes('Unauthorized')) {
+      if (e instanceof AuthExpiredError || msg.includes('401') || msg.includes('Unauthorized')) {
         stopPolling()
-        router.replace('/login')
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      } else {
+        setError(msg || 'Failed to refresh dialer state')
       }
     }
-  }, [router])
+  }, [])
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -608,6 +612,51 @@ export default function DialerPage() {
     poll()
     pollRef.current = setInterval(poll, 1500)
   }, [poll])
+
+  useEffect(() => {
+    if (bootedRef.current) return
+    bootedRef.current = true
+    let cancelled = false
+
+    const boot = async () => {
+      console.log('[AUTH_BOOT]')
+      const token = getToken()
+      if (!token) {
+        console.log('[AUTH_VALIDATE_FAILED]', { reason: 'missing_token_boot' })
+        if (!cancelled) {
+          setAuthStatus('expired')
+          setError(SESSION_EXPIRED_MESSAGE)
+        }
+        router.replace('/login?reason=session_expired')
+        return
+      }
+
+      console.log('[AUTH_TOKEN_FOUND]')
+      try {
+        const { agent, session } = await apiFetch<{ agent: { role: string } | null, session: { state: AgentState } | null }>('/session/me')
+        if (cancelled) return
+
+        console.log('[AUTH_VALIDATE_SUCCESS]', { state: session?.state ?? null })
+        setAgentRole(agent?.role ?? null)
+        setAgentState(session?.state ?? 'OFFLINE')
+        setAuthStatus('valid')
+        setError(null)
+        await loadHistory()
+        if (!cancelled) startPolling()
+      } catch (e: unknown) {
+        if (cancelled) return
+        console.log('[AUTH_VALIDATE_FAILED]', { reason: e instanceof Error ? e.message : 'unknown' })
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      }
+    }
+
+    boot()
+
+    return () => {
+      cancelled = true
+    }
+  }, [loadHistory, router, startPolling])
 
   const onRtcReady = useCallback(() => {
     setOnRtcReadyTick((n) => n + 1)
@@ -647,8 +696,13 @@ export default function DialerPage() {
         setError(null)
         startPolling()
       } catch (e: unknown) {
-        setAgentState('ERROR')
-        setError(e instanceof Error ? e.message : 'Failed to register SIP session')
+        if (e instanceof AuthExpiredError) {
+          setAuthStatus('expired')
+          setError(SESSION_EXPIRED_MESSAGE)
+        } else {
+          setAgentState('ERROR')
+          setError(e instanceof Error ? e.message : 'Failed to register SIP session')
+        }
       } finally {
         setLoading(null)
       }
@@ -769,8 +823,13 @@ export default function DialerPage() {
       const creds = await apiFetch<{ sip_username: string; sip_password: string }>('/session/webrtc-token')
       await connectRtc(creds.sip_username, creds.sip_password)
     } catch (e: unknown) {
-      setAgentState('ERROR')
-      setError(e instanceof Error ? e.message : 'Failed')
+      if (e instanceof AuthExpiredError) {
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      } else {
+        setAgentState('ERROR')
+        setError(e instanceof Error ? e.message : 'Failed')
+      }
       setLoading(null)
     }
   }
@@ -780,7 +839,14 @@ export default function DialerPage() {
     try {
       await apiFetch('/session/ready', { method: 'POST' })
       setAgentState('READY')
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed') }
+    } catch (e: unknown) {
+      if (e instanceof AuthExpiredError) {
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed')
+      }
+    }
     finally { setLoading(null) }
   }
 
@@ -789,7 +855,14 @@ export default function DialerPage() {
     try {
       await apiFetch('/session/pause', { method: 'POST' })
       setAgentState('PAUSED')
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed') }
+    } catch (e: unknown) {
+      if (e instanceof AuthExpiredError) {
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed')
+      }
+    }
     finally { setLoading(null) }
   }
 
@@ -797,7 +870,14 @@ export default function DialerPage() {
     if (!activeCall) return
     setLoading('hangup')
     try { await apiFetch(`/calls/${activeCall.id}/hangup`, { method: 'POST' }) }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed') }
+    catch (e: unknown) {
+      if (e instanceof AuthExpiredError) {
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed')
+      }
+    }
     finally { setLoading(null) }
   }
 
@@ -815,8 +895,25 @@ export default function DialerPage() {
       })
       setActiveCall(null); setDisposition(null); setNotes(''); setCallbackAt('')
       await loadHistory()
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Failed') }
+    } catch (e: unknown) {
+      if (e instanceof AuthExpiredError) {
+        setAuthStatus('expired')
+        setError(SESSION_EXPIRED_MESSAGE)
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed')
+      }
+    }
     finally { setWrapping(false) }
+  }
+
+  function logInAgain() {
+    router.replace('/login?reason=session_expired')
+  }
+
+  function clearSessionAndRetry() {
+    console.log('[AUTH_RECOVERY_CLEAR_SESSION]')
+    clearAuth()
+    router.replace('/login?reason=session_expired')
   }
 
   const lead = currentLeadRecord
@@ -826,6 +923,84 @@ export default function DialerPage() {
   const avgDuration = durations.length
     ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
     : null
+
+  if (authStatus === 'checking') {
+    return (
+      <div style={{
+        minHeight: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#020810',
+        color: 'rgba(226,232,240,0.72)',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontSize: 13,
+      }}>
+        Checking session…
+      </div>
+    )
+  }
+
+  if (authStatus === 'expired') {
+    return (
+      <div style={{
+        minHeight: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#020810',
+        color: '#e2e8f0',
+        padding: 24,
+      }}>
+        <div style={{
+          width: '100%',
+          maxWidth: 420,
+          padding: 24,
+          borderRadius: 10,
+          border: '1px solid rgba(239,68,68,0.3)',
+          background: 'rgba(5,10,20,0.82)',
+          boxShadow: '0 24px 60px rgba(0,0,0,0.42)',
+        }}>
+          <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 8 }}>Session expired</div>
+          <div style={{ fontSize: 13, color: 'rgba(226,232,240,0.68)', marginBottom: 18 }}>
+            {error ?? SESSION_EXPIRED_MESSAGE}
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <button
+              type="button"
+              onClick={logInAgain}
+              style={{
+                padding: '12px 16px',
+                borderRadius: 8,
+                border: '1px solid #06b6d4',
+                background: '#06b6d4',
+                color: '#020a10',
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}
+            >
+              Log in again
+            </button>
+            <button
+              type="button"
+              onClick={clearSessionAndRetry}
+              style={{
+                padding: '12px 16px',
+                borderRadius: 8,
+                border: '1px solid rgba(239,68,68,0.45)',
+                background: 'rgba(239,68,68,0.14)',
+                color: '#fca5a5',
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}
+            >
+              Clear session and retry
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <>
